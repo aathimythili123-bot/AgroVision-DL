@@ -1,0 +1,464 @@
+# ============================================================
+# AgroVision - Plant Leaf Disease Detection Using Deep Learning
+# CNN-based Plant Disease Classification
+# ============================================================
+
+import os
+import zipfile
+import shutil
+import random
+import urllib.request
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, models
+from tensorflow.keras.callbacks import EarlyStopping
+
+print("=" * 60)
+print("AGROVISION - PLANT LEAF DISEASE DETECTION")
+print("=" * 60)
+
+# ------------------------------------------------------------
+# 1. Project folder
+# ------------------------------------------------------------
+
+PROJECT_DIR = r"C:\Users\MOULIKA\Downloads\AgroVision-DL"
+os.makedirs(PROJECT_DIR, exist_ok=True)
+
+os.chdir(PROJECT_DIR)
+
+print("\nProject folder:")
+print(os.getcwd())
+
+# ------------------------------------------------------------
+# 2. Download PlantVillage dataset
+# ------------------------------------------------------------
+
+DATASET_URL = "https://github.com/spMohanty/PlantVillage-Dataset/archive/refs/heads/master.zip"
+
+ZIP_FILE = "plantvillage.zip"
+EXTRACT_FOLDER = "PlantVillage-Dataset-master"
+
+if not os.path.exists(EXTRACT_FOLDER):
+
+    print("\nDownloading PlantVillage dataset...")
+    print("Please wait. The dataset is large.")
+
+    urllib.request.urlretrieve(DATASET_URL, ZIP_FILE)
+
+    print("Download completed.")
+
+    print("Extracting dataset...")
+    with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
+        zip_ref.extractall(".")
+
+    print("Extraction completed.")
+
+else:
+    print("\nDataset already exists. Skipping download.")
+
+# ------------------------------------------------------------
+# 3. Locate image dataset
+# ------------------------------------------------------------
+
+possible_paths = [
+    os.path.join(EXTRACT_FOLDER, "plantvillage", "dataset", "segmented"),
+    os.path.join(EXTRACT_FOLDER, "dataset", "segmented"),
+    os.path.join(EXTRACT_FOLDER, "plantvillage", "dataset", "color"),
+    os.path.join(EXTRACT_FOLDER, "dataset", "color")
+]
+
+DATASET_DIR = None
+
+for path in possible_paths:
+    if os.path.exists(path):
+        DATASET_DIR = path
+        break
+
+if DATASET_DIR is None:
+    print("\nSearching for dataset folders...")
+
+    for root, dirs, files in os.walk(EXTRACT_FOLDER):
+        image_count = sum(
+            1 for f in files
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        )
+
+        if image_count > 20:
+            DATASET_DIR = root
+            break
+
+if DATASET_DIR is None:
+    raise FileNotFoundError(
+        "PlantVillage image dataset could not be located."
+    )
+
+print("\nDataset location:")
+print(DATASET_DIR)
+
+# ------------------------------------------------------------
+# 4. Find available classes
+# ------------------------------------------------------------
+
+all_classes = [
+    folder for folder in os.listdir(DATASET_DIR)
+    if os.path.isdir(os.path.join(DATASET_DIR, folder))
+]
+
+all_classes.sort()
+
+print("\nTotal disease/healthy classes found:", len(all_classes))
+
+print("\nAvailable classes:")
+for i, cls in enumerate(all_classes):
+    print(i + 1, "->", cls)
+
+# ------------------------------------------------------------
+# 5. Select a manageable number of classes
+# ------------------------------------------------------------
+
+# Using first 5 classes makes the project faster to train.
+# You can increase this later if your computer is fast enough.
+
+NUM_CLASSES = min(5, len(all_classes))
+
+selected_classes = all_classes[:NUM_CLASSES]
+
+print("\nClasses selected for training:")
+
+for cls in selected_classes:
+    print(" -", cls)
+
+# ------------------------------------------------------------
+# 6. Create a small dataset
+# ------------------------------------------------------------
+
+SMALL_DATASET = os.path.join(PROJECT_DIR, "agrovision_dataset")
+
+if os.path.exists(SMALL_DATASET):
+    shutil.rmtree(SMALL_DATASET)
+
+os.makedirs(SMALL_DATASET)
+
+IMAGES_PER_CLASS = 200
+
+print("\nCreating smaller training dataset...")
+print("Images per class:", IMAGES_PER_CLASS)
+
+total_images = 0
+
+for cls in selected_classes:
+
+    source_folder = os.path.join(DATASET_DIR, cls)
+    destination_folder = os.path.join(SMALL_DATASET, cls)
+
+    os.makedirs(destination_folder)
+
+    images = [
+        f for f in os.listdir(source_folder)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+
+    random.shuffle(images)
+
+    selected_images = images[:IMAGES_PER_CLASS]
+
+    for image_name in selected_images:
+
+        source = os.path.join(source_folder, image_name)
+        destination = os.path.join(destination_folder, image_name)
+
+        shutil.copy2(source, destination)
+
+    total_images += len(selected_images)
+
+    print(cls, "->", len(selected_images), "images")
+
+print("\nTotal images copied:", total_images)
+
+if total_images == 0:
+    raise ValueError("No images were found in the selected classes.")
+
+# ------------------------------------------------------------
+# 7. Image settings
+# ------------------------------------------------------------
+
+IMAGE_SIZE = (128, 128)
+BATCH_SIZE = 16
+
+# ------------------------------------------------------------
+# 8. Data augmentation
+# ------------------------------------------------------------
+
+train_datagen = ImageDataGenerator(
+    rescale=1.0 / 255,
+    validation_split=0.20,
+    rotation_range=20,
+    width_shift_range=0.10,
+    height_shift_range=0.10,
+    zoom_range=0.15,
+    horizontal_flip=True
+)
+
+validation_datagen = ImageDataGenerator(
+    rescale=1.0 / 255,
+    validation_split=0.20
+)
+
+# ------------------------------------------------------------
+# 9. Training generator
+# ------------------------------------------------------------
+
+train_generator = train_datagen.flow_from_directory(
+    SMALL_DATASET,
+    target_size=IMAGE_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode="categorical",
+    subset="training",
+    shuffle=True
+)
+
+# ------------------------------------------------------------
+# 10. Validation generator
+# ------------------------------------------------------------
+
+validation_generator = validation_datagen.flow_from_directory(
+    SMALL_DATASET,
+    target_size=IMAGE_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode="categorical",
+    subset="validation",
+    shuffle=False
+)
+
+print("\nTraining images:", train_generator.samples)
+print("Validation images:", validation_generator.samples)
+
+if train_generator.samples == 0:
+    raise ValueError("Training dataset is empty.")
+
+if validation_generator.samples == 0:
+    raise ValueError("Validation dataset is empty.")
+
+# ------------------------------------------------------------
+# 11. Save class names
+# ------------------------------------------------------------
+
+class_names = list(train_generator.class_indices.keys())
+
+print("\nClass names:")
+
+for i, name in enumerate(class_names):
+    print(i, "->", name)
+
+with open("class_names.txt", "w") as f:
+    for name in class_names:
+        f.write(name + "\n")
+
+# ------------------------------------------------------------
+# 12. Build CNN model
+# ------------------------------------------------------------
+
+print("\nBuilding CNN model...")
+
+model = models.Sequential([
+
+    layers.Input(shape=(128, 128, 3)),
+
+    layers.Conv2D(32, (3, 3), activation="relu"),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Conv2D(64, (3, 3), activation="relu"),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Conv2D(128, (3, 3), activation="relu"),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Flatten(),
+
+    layers.Dense(128, activation="relu"),
+    layers.Dropout(0.3),
+
+    layers.Dense(NUM_CLASSES, activation="softmax")
+])
+
+model.compile(
+    optimizer="adam",
+    loss="categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.summary()
+
+# ------------------------------------------------------------
+# 13. Early stopping
+# ------------------------------------------------------------
+
+early_stopping = EarlyStopping(
+    monitor="val_loss",
+    patience=3,
+    restore_best_weights=True
+)
+
+# ------------------------------------------------------------
+# 14. Train model
+# ------------------------------------------------------------
+
+print("\nStarting CNN training...")
+print("Please wait...\n")
+
+history = model.fit(
+    train_generator,
+    validation_data=validation_generator,
+    epochs=10,
+    callbacks=[early_stopping]
+)
+
+# ------------------------------------------------------------
+# 15. Evaluate model
+# ------------------------------------------------------------
+
+print("\n" + "=" * 60)
+print("MODEL EVALUATION")
+print("=" * 60)
+
+loss, accuracy = model.evaluate(validation_generator, verbose=0)
+
+print("\nValidation Loss:", round(loss, 4))
+print("Validation Accuracy:", round(accuracy * 100, 2), "%")
+
+# ------------------------------------------------------------
+# 16. Save trained model
+# ------------------------------------------------------------
+
+MODEL_FILE = os.path.join(PROJECT_DIR, "agrovision_cnn.keras")
+
+model.save(MODEL_FILE)
+
+print("\nModel saved successfully:")
+print(MODEL_FILE)
+
+# ------------------------------------------------------------
+# 17. Plot accuracy
+# ------------------------------------------------------------
+
+plt.figure(figsize=(8, 5))
+
+plt.plot(
+    history.history["accuracy"],
+    label="Training Accuracy"
+)
+
+plt.plot(
+    history.history["val_accuracy"],
+    label="Validation Accuracy"
+)
+
+plt.title("AgroVision CNN Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.legend()
+plt.grid()
+
+plt.show()
+
+# ------------------------------------------------------------
+# 18. Test prediction
+# ------------------------------------------------------------
+
+print("\n" + "=" * 60)
+print("TEST PREDICTION")
+print("=" * 60)
+
+# Get first image from validation dataset
+test_image_path = None
+
+for cls in class_names:
+
+    folder = os.path.join(SMALL_DATASET, cls)
+
+    images = [
+        f for f in os.listdir(folder)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+
+    if images:
+        test_image_path = os.path.join(folder, images[0])
+        break
+
+if test_image_path:
+
+    print("\nTesting image:")
+    print(test_image_path)
+
+    image = tf.keras.utils.load_img(
+        test_image_path,
+        target_size=IMAGE_SIZE
+    )
+
+    image_array = tf.keras.utils.img_to_array(image)
+
+    image_array = image_array / 255.0
+
+    image_array = np.expand_dims(
+        image_array,
+        axis=0
+    )
+
+    prediction = model.predict(
+        image_array,
+        verbose=0
+    )
+
+    predicted_index = np.argmax(prediction[0])
+
+    predicted_class = class_names[predicted_index]
+
+    confidence = prediction[0][predicted_index] * 100
+
+    print("\nPredicted Disease/Class:")
+    print(predicted_class)
+
+    print("\nConfidence:")
+    print(round(confidence, 2), "%")
+
+    plt.figure(figsize=(6, 6))
+
+    plt.imshow(image)
+
+    plt.title(
+        f"Prediction: {predicted_class}\n"
+        f"Confidence: {confidence:.2f}%"
+    )
+
+    plt.axis("off")
+
+    plt.show()
+
+else:
+    print("No test image found.")
+
+# ------------------------------------------------------------
+# 19. Final project information
+# ------------------------------------------------------------
+
+print("\n" + "=" * 60)
+print("AGROVISION PROJECT COMPLETED")
+print("=" * 60)
+
+print("\nProject folder:")
+print(PROJECT_DIR)
+
+print("\nSaved model:")
+print(MODEL_FILE)
+
+print("\nClasses used:")
+for cls in class_names:
+    print(" -", cls)
+
+print("\nFinal validation accuracy:")
+print(round(accuracy * 100, 2), "%")
+
+print("\nAgroVision is ready!")
